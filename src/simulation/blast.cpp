@@ -1,0 +1,365 @@
+#include <stdafx.hpp>
+#include <simulation/blast.hpp>
+
+namespace simulation
+{
+
+namespace detail_bd
+{
+
+static float dist_to_aabb(const foundation::vec3& p, const foundation::vec3& mins, const foundation::vec3& maxs)
+{
+    const auto dx = std::max({mins.x - p.x, 0.0f, p.x - maxs.x});
+    const auto dy = std::max({mins.y - p.y, 0.0f, p.y - maxs.y});
+    const auto dz = std::max({mins.z - p.z, 0.0f, p.z - maxs.z});
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+} // namespace detail_bd
+
+void blast_model::replace_with(blast_model& built)
+{
+    if (this == &built)
+        return;
+    std::scoped_lock lock(m_mutex, built.m_mutex);
+    std::swap(m_sites, built.m_sites);
+    std::swap(m_points, built.m_points);
+    std::swap(m_damage_values, built.m_damage_values);
+    std::swap(m_cells, built.m_cells);
+    std::swap(m_bounds, built.m_bounds);
+}
+
+void blast_model::clear()
+{
+    blast_model retired;
+    replace_with(retired);
+}
+
+bool blast_model::valid() const
+{
+    std::shared_lock lock(m_mutex);
+    return !m_points.empty() && !m_sites.empty();
+}
+
+std::size_t blast_model::point_count() const
+{
+    std::shared_lock lock(m_mutex);
+    return m_points.size();
+}
+
+std::int32_t blast_model::site_count() const
+{
+    std::shared_lock lock(m_mutex);
+    return static_cast<std::int32_t>(m_sites.size());
+}
+
+blast_model::site_info blast_model::site(std::int32_t index) const
+{
+    std::shared_lock lock(m_mutex);
+    if (index < 0 || index >= static_cast<std::int32_t>(m_sites.size()))
+    {
+        return {};
+    }
+
+    return m_sites[index];
+}
+
+blast_model::grid_bounds blast_model::bounds() const
+{
+    std::shared_lock lock(m_mutex);
+    return m_bounds;
+}
+
+std::int32_t blast_model::site_for_position(const foundation::vec3& pos) const
+{
+    std::shared_lock lock(m_mutex);
+
+    auto best{-1};
+    auto best_dist{1e18f};
+
+    for (std::size_t s = 0; s < m_sites.size(); ++s)
+    {
+        const auto d = detail_bd::dist_to_aabb(pos, m_sites[s].mins, m_sites[s].maxs);
+        if (d < best_dist)
+        {
+            best_dist = d;
+            best = static_cast<std::int32_t>(s);
+        }
+    }
+
+    return best;
+}
+
+const blast_model::cell* blast_model::find_cell(std::int32_t cx, std::int32_t cy) const
+{
+    const auto it = m_cells.find(cell_key(cx, cy));
+    return it != m_cells.end() ? &it->second : nullptr;
+}
+
+std::int32_t blast_model::nearest_point_index(const foundation::vec3& pos) const
+{
+    const auto center_x = static_cast<std::int32_t>(std::lround((pos.x - 5.0f) / 10.0f));
+    const auto center_y = static_cast<std::int32_t>(std::lround((pos.y - 5.0f) / 10.0f));
+    auto best_idx{-1};
+    auto best_dist_sqr{std::numeric_limits<float>::max()};
+
+    const auto consider_cell = [&](std::int32_t cx, std::int32_t cy)
+    {
+        const auto* c = find_cell(cx, cy);
+        if (!c)
+            return;
+
+        for (std::uint8_t i = 0; i < c->count; ++i)
+        {
+            const auto idx = c->idx[i];
+            const auto& point = m_points[idx];
+            const auto dx = static_cast<float>(point.x) - pos.x;
+            const auto dy = static_cast<float>(point.y) - pos.y;
+            const auto dz = static_cast<float>(point.z) - pos.z;
+            const auto distance_sqr = dx * dx + dy * dy + dz * dz;
+            if (distance_sqr < best_dist_sqr)
+            {
+                best_dist_sqr = distance_sqr;
+                best_idx = static_cast<std::int32_t>(idx);
+            }
+        }
+    };
+
+    for (auto radius = 0; radius <= 512; ++radius)
+    {
+        if (radius == 0)
+        {
+            consider_cell(center_x, center_y);
+        }
+        else
+        {
+            for (auto d = -radius; d <= radius; ++d)
+            {
+                consider_cell(center_x + d, center_y - radius);
+                consider_cell(center_x + d, center_y + radius);
+            }
+            for (auto d = -radius + 1; d < radius; ++d)
+            {
+                consider_cell(center_x - radius, center_y + d);
+                consider_cell(center_x + radius, center_y + d);
+            }
+        }
+
+        if (best_idx >= 0)
+        {
+            const auto next_ring_min = std::max(0.0f, (static_cast<float>(radius) + 0.5f) * 10.0f);
+            if (next_ring_min * next_ring_min > best_dist_sqr)
+            {
+                break;
+            }
+        }
+    }
+
+    return best_idx;
+}
+
+int blast_model::predicted_damage(const foundation::vec3& pos, std::int32_t site, const foundation::vec3& eye_angles,
+                                  bool ducked) const
+{
+    std::shared_lock lock(m_mutex);
+
+    const auto n = m_points.size();
+    if (n == 0 || site < 0 || site >= static_cast<std::int32_t>(m_sites.size()))
+    {
+        return -1;
+    }
+
+    const auto best_idx = nearest_point_index(pos);
+    if (best_idx < 0)
+    {
+        return -1;
+    }
+
+    return calculate_damage(m_damage_values[static_cast<std::size_t>(site) * n + best_idx], m_sites[site], eye_angles,
+                            ducked);
+}
+
+
+bool blast_model::sample_grid_surfaces(const std::int32_t site, const float minimum_iso, const float maximum_iso,
+                                       std::vector<grid_quad>& out_surfaces) const
+{
+    std::shared_lock lock(m_mutex);
+    const auto point_count = m_points.size();
+    if (point_count == 0 || site < 0 || site >= static_cast<std::int32_t>(m_sites.size()))
+    {
+        out_surfaces.clear();
+        return false;
+    }
+
+    out_surfaces.clear();
+    out_surfaces.reserve(m_cells.size());
+    const auto& site_info = m_sites[site];
+    constexpr auto max_edge_step = 96.0f;
+    constexpr auto invalid_index = std::numeric_limits<std::uint32_t>::max();
+
+    const auto closest_to = [&](const cell& candidates, const float z)
+    {
+        auto best = invalid_index;
+        auto best_delta = max_edge_step + 1.0f;
+        for (std::uint8_t i = 0; i < candidates.count; ++i)
+        {
+            const auto index = candidates.idx[i];
+            const auto delta = std::abs(static_cast<float>(m_points[index].z) - z);
+            if (delta < best_delta)
+            {
+                best_delta = delta;
+                best = index;
+            }
+        }
+        return best_delta <= max_edge_step ? best : invalid_index;
+    };
+
+    const auto make_sample = [&](const std::uint32_t index)
+    {
+        const auto& value = m_damage_values[static_cast<std::size_t>(site) * point_count + index];
+        const foundation::vec3 wave_angles{static_cast<float>(value.pitch) / 255.0f * 360.0f,
+                                           static_cast<float>(value.yaw) / 255.0f * 360.0f, 0.0f};
+        grid_sample sample{};
+        wave_angles.to_directions(&sample.wave_forward, nullptr, nullptr);
+        sample.z = static_cast<float>(m_points[index].z);
+        sample.base_damage = calculate_base_damage(value, site_info);
+        sample.valid = true;
+        return sample;
+    };
+
+    for (const auto& [key, c0] : m_cells)
+    {
+        if (c0.count == 0)
+            continue;
+        const auto cell_x = static_cast<std::int32_t>(static_cast<std::uint32_t>(key >> 32));
+        const auto cell_y = static_cast<std::int32_t>(static_cast<std::uint32_t>(key));
+        const auto* c1 = find_cell(cell_x + 1, cell_y);
+        const auto* c2 = find_cell(cell_x + 1, cell_y + 1);
+        const auto* c3 = find_cell(cell_x, cell_y + 1);
+        if (!c1 || !c2 || !c3)
+            continue;
+
+        for (std::uint8_t layer = 0; layer < c0.count; ++layer)
+        {
+            const auto i0 = c0.idx[layer];
+            const auto z0 = static_cast<float>(m_points[i0].z);
+            const auto i1 = closest_to(*c1, z0);
+            const auto i3 = closest_to(*c3, z0);
+            if (i1 == invalid_index || i3 == invalid_index)
+                continue;
+
+            // The diagonal corner must agree with both adjacent edges. This keeps A,
+            // vents and B independent even where their baked points overlap in XY.
+            auto i2 = invalid_index;
+            auto best_error = std::numeric_limits<float>::max();
+            const auto z1 = static_cast<float>(m_points[i1].z);
+            const auto z3 = static_cast<float>(m_points[i3].z);
+            for (std::uint8_t candidate = 0; candidate < c2->count; ++candidate)
+            {
+                const auto index = c2->idx[candidate];
+                const auto z2 = static_cast<float>(m_points[index].z);
+                const auto edge_1 = std::abs(z2 - z1);
+                const auto edge_3 = std::abs(z2 - z3);
+                if (edge_1 > max_edge_step || edge_3 > max_edge_step)
+                    continue;
+                const auto error = std::max(edge_1, edge_3) + std::abs(z2 - z0) * 0.25f;
+                if (error < best_error)
+                {
+                    best_error = error;
+                    i2 = index;
+                }
+            }
+            if (i2 == invalid_index)
+                continue;
+
+            grid_quad quad{};
+            quad.cell_x = cell_x;
+            quad.cell_y = cell_y;
+            quad.point_indices = {i0, i1, i2, i3};
+            for (std::size_t corner = 0; corner < 4; ++corner)
+            {
+                quad.samples[corner] = make_sample(quad.point_indices[corner]);
+                quad.damage[corner] = static_cast<float>(calculate_sample_damage_worst_case(quad.samples[corner]));
+            }
+
+            const auto [low, high] = std::minmax_element(quad.damage.begin(), quad.damage.end());
+            if (*low <= maximum_iso && *high >= minimum_iso)
+                out_surfaces.push_back(std::move(quad));
+        }
+    }
+
+    return !out_surfaces.empty();
+}
+
+std::int32_t blast_model::calculate_base_damage(const damage_value& value, const site_info& site)
+{
+    const auto wave = static_cast<float>(value.wave_dist);
+    const auto span = std::clamp(wave, 0.0f, 1800.0f);
+    auto base_damage = 0.0f;
+
+    if (span == 0.0f)
+    {
+        base_damage = wave < site.scale ? 100.0f : 0.0f;
+    }
+    else
+    {
+        base_damage = 100.0f + (wave - site.scale) * -100.0f / span;
+    }
+
+    return std::clamp(static_cast<int>(base_damage), 0, 255);
+}
+
+std::int32_t blast_model::calculate_sample_damage(const grid_sample& sample, const foundation::vec3& player_forward,
+                                                  bool ducked)
+{
+    auto damage = sample.base_damage;
+    if (damage >= 100)
+    {
+        return damage;
+    }
+
+    const auto bias = [](float x, float amount)
+    {
+        x = std::clamp(x, 0.0f, 1.0f);
+        amount = std::clamp(amount, std::numeric_limits<float>::min(), 1.0f);
+        return x / ((1.0f / amount - 2.0f) * (1.0f - x) + 1.0f);
+    };
+
+    const auto apply_bias = [&](float amount)
+    { damage = std::clamp(static_cast<int>(bias(static_cast<float>(damage) / 100.0f, amount) * 100.0f), 0, 255); };
+
+    if (ducked)
+    {
+        apply_bias(0.45f);
+    }
+
+    const auto facing = std::clamp((sample.wave_forward.dot(player_forward) + 1.0f) * 0.5f, 0.0f, 1.0f);
+    apply_bias(0.53f - facing * 0.06f);
+    return damage;
+}
+
+std::int32_t blast_model::calculate_sample_damage_worst_case(const grid_sample& sample)
+{
+    // facing == 0 selects amount 0.53, the maximum-damage endpoint of
+    // client.dll's orientation Bias. Standing is also worse than ducked.
+    const foundation::vec3 opposite_wave{-sample.wave_forward.x, -sample.wave_forward.y, -sample.wave_forward.z};
+    return calculate_sample_damage(sample, opposite_wave, false);
+}
+
+int blast_model::calculate_damage(const damage_value& value, const site_info& site, const foundation::vec3& eye_angles,
+                                  bool ducked)
+{
+    foundation::vec3 player_forward{};
+    eye_angles.to_directions(&player_forward, nullptr, nullptr);
+
+    // The packed bytes are passed to QAngle as (pitch=byte3, yaw=byte2).
+    const foundation::vec3 wave_angles{static_cast<float>(value.pitch) / 255.0f * 360.0f,
+                                       static_cast<float>(value.yaw) / 255.0f * 360.0f, 0.0f};
+    grid_sample sample{};
+    wave_angles.to_directions(&sample.wave_forward, nullptr, nullptr);
+    sample.base_damage = calculate_base_damage(value, site);
+    sample.valid = true;
+    return calculate_sample_damage(sample, player_forward, ducked);
+}
+
+} // namespace simulation

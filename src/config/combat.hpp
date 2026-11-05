@@ -1,0 +1,332 @@
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <windows.h>
+
+#include <foundation/color.hpp>
+#include <platform/windows/activation.hpp>
+
+namespace config
+{
+
+struct combat_profile
+{
+    struct activation
+    {
+        enum mode : int
+        {
+            hold = 0,
+            always = 1,
+            toggle = 2
+        };
+    };
+    [[nodiscard]] static bool activation_active(int mode, int key) noexcept
+    {
+        return platform::windows::binding_active(mode, key, activation::always, activation::hold, activation::toggle);
+    }
+
+    struct wall_policy
+    {
+        enum mode : int
+        {
+            block = 0,
+            penetration = 1,
+            ignore = 2
+        };
+    };
+
+    struct legit_checks
+    {
+        bool airborne{};
+        bool flashed{};
+        bool smoke{};
+        // Percentage of the actual flash overlay required to block combat input.
+        // A high default means short edge flashes do not interrupt aiming.
+        float flash_threshold{85.0f};
+        int walls{wall_policy::penetration};
+    };
+
+    struct humanizer_settings
+    {
+        float gravity{9.0f};
+        float wind{0.8f};
+        float max_step{24.0f};
+        float damping{0.85f};
+        int reaction_min_ms{25};
+        int reaction_max_ms{60};
+        float curve{0.40f};
+        float overshoot_chance{5.0f};
+        float overshoot_amount{0.04f};
+        float jitter{0.10f};
+        float deadzone{0.25f};
+    };
+
+    struct multipoint_settings
+    {
+        bool caps{true};
+        bool sides{true};
+        float head_scale{0.50f};
+        float body_scale{0.50f};
+        float limb_scale{0.50f};
+    };
+
+    struct prediction_settings
+    {
+        bool enabled{true};
+        float max_horizon_ms{120.0f};
+        bool acceleration{false};
+    };
+
+    struct rcs_settings
+    {
+        bool enabled{false};
+        int start_bullet{2};
+        float pitch{100.0f};
+        float yaw{100.0f};
+        float response_ms{35.0f};
+        float smoothness{75.0f};
+        float randomness{30.0f};
+        float drift{30.0f};
+    };
+
+    struct fov_settings
+    {
+        enum mode : int
+        {
+            fixed = 0,
+            distance = 1,
+            target_distance = 2
+        };
+        enum indicator : int
+        {
+            center = 0,
+            target = 1
+        };
+        int selection{target_distance};
+        // Kept for legacy config migration. Rendering now exposes the acquisition
+        // area and selected aim point as independent layers.
+        int visualization{center};
+        // Distance-scaled FOV is interpolated geometrically. These pairs are
+        // explicit clamps at point-blank and long range.
+        float near_distance_m{2.5f};
+        float near_fov{2.0f};
+        float far_distance_m{10.0f};
+        float far_fov{2.0f};
+        float distance_curve{1.0f};
+        float target_near_distance_m{2.5f};
+        float target_near_fov{20.0f};
+        float target_far_distance_m{10.0f};
+        float target_far_fov{2.0f};
+        float target_distance_curve{1.0f};
+    };
+
+    enum aim_part : int
+    {
+        head = 1 << 0,
+        body = 1 << 1, // chest + stomach
+        arms = 1 << 2,
+        legs = 1 << 3,
+        all = head | body | arms | legs,
+    };
+
+    struct seed_mode
+    {
+        enum : int
+        {
+            none = 0,
+            restricted = 1,
+            unrestricted = 2,
+        };
+    };
+
+    struct aimbot
+    {
+        bool enabled{false};
+        int key{0x43};
+        int activation_mode{activation::hold};
+        int fov{2};
+        int smoothing{5};
+        int humanize{35}; // 0 preserves mechanical motion; 100 applies the full humanized profile.
+        bool autowall{true};
+        float min_damage{65.0f};
+        bool lethal_only{true};
+        int hitbox_parts{aim_part::all}; // multi-select body parts (was head_only)
+        bool multipoint{true};           // aim at safe registering points, not raw bone center
+        bool visible_only{true};         // legacy view; wall behaviour is resolved into checks.walls
+        bool draw_fov{true};
+        foundation::rgba fov_color{217, 217, 217, 125};
+        bool predictive{false};
+        bool recoil_sync{false};
+        legit_checks checks{};
+        humanizer_settings humanizer{};
+        multipoint_settings multipoint_config{};
+        prediction_settings prediction{};
+        rcs_settings rcs{};
+        fov_settings fov_config{};
+    };
+
+    struct triggerbot
+    {
+        bool enabled{true};
+        int key{0x43};
+        int activation_mode{activation::hold};
+        int seed_type{seed_mode::none};
+        int hitbox_parts{aim_part::head};
+        float hitchance{75.0f};
+        int delay{10};
+        int randomize_ms{5};
+        float outlier_chance{3.0f};
+        int outlier_delay_ms{20};
+        int delay_after_ms{100};
+        bool lethal_only{};
+
+        int reaction_time{0};
+        bool autowall{true};
+        float min_damage{90.0f};
+        bool autostop{false};
+        bool predictive{true};
+
+        bool revolver_pre_cock{};
+        int revolver_release_margin_ms{16};
+        legit_checks checks{};
+    };
+
+    struct other
+    {
+        bool penetration_crosshair{false};
+        foundation::rgba penetration_color_yes{0, 255, 0, 255};
+        foundation::rgba penetration_color_no{255, 0, 0, 255};
+    };
+
+    struct global_settings
+    {
+        bool aimbot_enabled{false};
+        int aimbot_key{0x43};
+        int aimbot_activation_mode{activation::hold};
+        int aimbot_fov{2};
+        int aimbot_smoothing{5};
+        int aimbot_humanize{35};
+        bool aimbot_autowall{true};
+        float aimbot_min_damage{65.0f};
+        bool aimbot_min_damage_override_enabled{true};
+        float aimbot_min_damage_override{10.0f};
+        int aimbot_min_damage_override_mode{activation::hold};
+        int aimbot_min_damage_override_key{0x05};
+        bool aimbot_lethal_only{true};
+        int aimbot_hitbox_parts{aim_part::all};
+        bool aimbot_multipoint{true};
+        bool aimbot_visible_only{true};
+        bool aimbot_draw_fov{true};
+        foundation::rgba aimbot_fov_color{217, 217, 217, 125};
+        bool aimbot_predictive{false};
+        bool aimbot_recoil_sync{false};
+        legit_checks aimbot_checks{};
+        humanizer_settings aimbot_humanizer{};
+        multipoint_settings aimbot_multipoint_config{};
+        prediction_settings aimbot_prediction{};
+        rcs_settings aimbot_rcs{};
+        fov_settings aimbot_fov_config{};
+
+        struct grenade_aim_config
+        {
+            bool enabled{false};
+            int key{0x05}; // Mouse4
+            int fov{30};
+            int smoothing{10};
+        } grenade_aim{};
+
+        bool triggerbot_enabled{true};
+        int triggerbot_key{0x43};
+        int triggerbot_activation_mode{activation::hold};
+        int triggerbot_seed_type{seed_mode::none};
+        int triggerbot_hitbox_parts{aim_part::head};
+        float triggerbot_hitchance{75.0f};
+        int triggerbot_delay{10};
+        int triggerbot_randomize_ms{5};
+        float triggerbot_outlier_chance{3.0f};
+        int triggerbot_outlier_delay_ms{20};
+        int triggerbot_delay_after_ms{100};
+        bool triggerbot_lethal_only{};
+        int triggerbot_reaction_time{0};
+        float triggerbot_min_damage{90.0f};
+        bool triggerbot_min_damage_override_enabled{};
+        float triggerbot_min_damage_override{1.0f};
+        int triggerbot_min_damage_override_mode{activation::hold};
+        int triggerbot_min_damage_override_key{};
+        bool triggerbot_autowall{true};
+        bool triggerbot_autostop{false};
+        bool triggerbot_predictive{true};
+        bool triggerbot_revolver_pre_cock{};
+        int triggerbot_revolver_release_margin_ms{16};
+        legit_checks triggerbot_checks{};
+
+        bool penetration_crosshair{false};
+        foundation::rgba penetration_color_yes{0, 255, 0, 255};
+        foundation::rgba penetration_color_no{255, 0, 0, 255};
+    };
+
+    struct group_overrides
+    {
+        bool use_global{true};
+        int aimbot_fov{2};
+        int aimbot_smoothing{5};
+        int aimbot_humanize{35};
+        bool aimbot_autowall{true};
+        float aimbot_min_damage{65.0f};
+        bool aimbot_lethal_only{true};
+        int aimbot_hitbox_parts{aim_part::all};
+        bool aimbot_multipoint{true};
+        bool aimbot_visible_only{true};
+        bool aimbot_predictive{false};
+        bool aimbot_recoil_sync{false};
+        legit_checks aimbot_checks{};
+        humanizer_settings aimbot_humanizer{};
+        multipoint_settings aimbot_multipoint_config{};
+        prediction_settings aimbot_prediction{};
+        rcs_settings aimbot_rcs{};
+        fov_settings aimbot_fov_config{};
+
+        int triggerbot_seed_type{seed_mode::none};
+        int triggerbot_hitbox_parts{aim_part::head};
+        float triggerbot_hitchance{75.0f};
+        int triggerbot_delay{10};
+        int triggerbot_randomize_ms{5};
+        float triggerbot_outlier_chance{3.0f};
+        int triggerbot_outlier_delay_ms{20};
+        int triggerbot_delay_after_ms{100};
+        bool triggerbot_lethal_only{};
+        int triggerbot_reaction_time{0};
+        float triggerbot_min_damage{90.0f};
+        bool triggerbot_autowall{true};
+        bool triggerbot_autostop{false};
+        bool triggerbot_predictive{true};
+        bool triggerbot_revolver_pre_cock{};
+        int triggerbot_revolver_release_margin_ms{16};
+        legit_checks triggerbot_checks{};
+    };
+
+    static constexpr std::uint32_t k_group_count{6};
+
+    global_settings global{};
+    std::array<group_overrides, k_group_count> overrides{};
+
+    struct resolved_config
+    {
+        aimbot aimbot{};
+        triggerbot triggerbot{};
+        other other{};
+    };
+
+    resolved_config get(std::uint32_t weapon_type) const;
+    [[nodiscard]] bool seed_trigger_configured() const noexcept;
+    struct group_config
+    {
+        aimbot aimbot{};
+        triggerbot triggerbot{};
+        other other{};
+    };
+    std::array<group_config, k_group_count> groups{};
+};
+
+} // namespace config

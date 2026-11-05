@@ -1,0 +1,11 @@
+#pragma once
+
+#include <array>
+#include <string_view>
+
+namespace scripting::trusted
+{
+// SHA-256 (lowercase hex) of the scripts that may leave the Lua sandbox, computed over their text with CRLF folded
+// to LF. Generated at configure time from scripts/Vesta Web Radar.lua; any change to that file needs a new build.
+inline constexpr std::array<std::string_view, 1> k_sha256{"@VESTA_RADAR_SHA256@"};
+} // namespace scripting::trusted
